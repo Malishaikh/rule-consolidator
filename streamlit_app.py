@@ -2,26 +2,47 @@ import streamlit as st
 import pandas as pd
 import ipaddress
 
-# --- Function to load firewall rules from Excel ---
-def load_firewall_rules(file):
-    df = pd.read_excel(file)
-    return df
+# --- Function to load firewall rules and address groups from Excel ---
+def load_firewall_and_addresses(file):
+    xl = pd.ExcelFile(file)
+    fw_df = xl.parse("Firewall Policy")
+    ag_df = xl.parse("Address Group")
+    return fw_df, ag_df
+
+# --- Expand address groups into actual subnets (support multiple groups per field) ---
+def resolve_address_group_field(field_value, address_group_df):
+    all_addresses = []
+    group_names = [name.strip() for name in str(field_value).split(',') if name.strip()]
+    
+    for name in group_names:
+        matched = address_group_df[address_group_df['Group Name'] == name]
+        if matched.empty:
+            all_addresses.append(name)  # Treat as literal IP or subnet
+        else:
+            members = matched.iloc[0]['Members']
+            member_list = [m.strip() for m in str(members).split(',') if m.strip()]
+            all_addresses.extend(member_list)
+
+    return all_addresses
 
 # --- Function to check if a rule matches customer subnets ---
-def match_rules(firewall_rules, customer_subnets):
+def match_rules(firewall_rules, address_groups, customer_subnets):
     matched_rules = []
-    
+
     for _, rule in firewall_rules.iterrows():
+        src_addrs = resolve_address_group_field(rule['Source'], address_groups)
+        dst_addrs = resolve_address_group_field(rule['Destination'], address_groups)
+
         try:
-            src_net = ipaddress.ip_network(rule['Source'], strict=False)
-            dst_net = ipaddress.ip_network(rule['Destination'], strict=False)
+            src_nets = [ipaddress.ip_network(addr, strict=False) for addr in src_addrs]
+            dst_nets = [ipaddress.ip_network(addr, strict=False) for addr in dst_addrs]
         except ValueError:
             continue  # Skip invalid entries
 
         for subnet in customer_subnets:
             try:
                 customer_net = ipaddress.ip_network(subnet.strip(), strict=False)
-                if customer_net.overlaps(src_net) or customer_net.overlaps(dst_net):
+                if any(customer_net.overlaps(n) for n in src_nets + dst_nets):
                     matched_rules.append(rule)
                     break
             except ValueError:
@@ -33,8 +54,8 @@ def match_rules(firewall_rules, customer_subnets):
 st.title("Customer Firewall Rule Extractor")
 
 st.markdown("""
-This tool helps extract firewall rules relevant to a specific customer based on their IP subnets.
-Upload an Excel file with firewall rules and input the customer subnets below.
+This tool extracts firewall rules relevant to a specific customer based on their IP subnets.
+Upload an Excel file with 'Firewall Policy' and 'Address Group' tabs.
 """)
 
 # Upload Excel file
@@ -45,9 +66,9 @@ subnet_input = st.text_area("Enter Customer Subnets (one per line)", height=150)
 
 if uploaded_file and subnet_input:
     st.subheader("Matching Rules")
-    firewall_rules_df = load_firewall_rules(uploaded_file)
+    firewall_rules_df, address_groups_df = load_firewall_and_addresses(uploaded_file)
     customer_subnets = subnet_input.strip().splitlines()
-    matched_df = match_rules(firewall_rules_df, customer_subnets)
+    matched_df = match_rules(firewall_rules_df, address_groups_df, customer_subnets)
 
     st.write(f"Found {len(matched_df)} matching rules.")
     st.dataframe(matched_df)
