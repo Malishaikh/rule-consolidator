@@ -5,15 +5,24 @@ import ipaddress
 # --- Function to load firewall rules and address groups from Excel ---
 def load_firewall_and_addresses(file):
     xl = pd.ExcelFile(file)
-    fw_df = xl.parse("Firewall Policy")
+    fw_df_raw = xl.parse("Firewall Policy")
     ag_df = xl.parse("Address Group")
+
+    # Normalize firewall policy column names
+    fw_df = fw_df_raw.rename(columns=lambda x: str(x).strip().lower())
+
+    # Map expected fields to normalized column names
+    if 'source' not in fw_df.columns or 'destination' not in fw_df.columns:
+        st.error("'Source' and/or 'Destination' columns not found in 'Firewall Policy' tab. Please check column names.")
+        st.stop()
+
     return fw_df, ag_df
 
 # --- Expand address groups into actual subnets (support multiple groups per field) ---
 def resolve_address_group_field(field_value, address_group_df):
     all_addresses = []
     group_names = [name.strip() for name in str(field_value).split(',') if name.strip()]
-    
+
     for name in group_names:
         matched = address_group_df[address_group_df['Group Name'] == name]
         if matched.empty:
@@ -30,8 +39,8 @@ def match_rules(firewall_rules, address_groups, customer_subnets):
     matched_rules = []
 
     for _, rule in firewall_rules.iterrows():
-        src_addrs = resolve_address_group_field(rule['Source'], address_groups)
-        dst_addrs = resolve_address_group_field(rule['Destination'], address_groups)
+        src_addrs = resolve_address_group_field(rule['source'], address_groups)
+        dst_addrs = resolve_address_group_field(rule['destination'], address_groups)
 
         try:
             src_nets = [ipaddress.ip_network(addr, strict=False) for addr in src_addrs]
